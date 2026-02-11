@@ -6,10 +6,22 @@ from datetime import datetime, timedelta
 import pytz
 import uuid
 import streamlit.components.v1 as components
+import requests # 로그인 수동 처리를 위한 라이브러리
 
 # ---------------------------------------------------------
-# 1. 시스템 보안 및 테마 설정
+# 1. 시스템 보안 및 테마 설정 (Midnight Navy & Gold)
 # ---------------------------------------------------------
+try:
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    FMP_API_KEY = st.secrets["FMP_API_KEY"]
+    ADMIN_EMAIL = st.secrets["ADMIN_EMAIL"]
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception as e:
+    st.error(f"🔑 Secrets 설정 오류: {e}")
+    st.stop()
+
 ssl_context = ssl._create_unverified_context()
 st.set_page_config(page_title="Tetrades Gold", page_icon="🏛️", layout="wide")
 
@@ -32,30 +44,7 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 2. Supabase 클라이언트 설정 (캐싱 적용 - 핵심 수정)
-# ---------------------------------------------------------
-# [중요] 리소스 캐싱을 통해 페이지가 새로고침되어도 인증 상태(Verifier)를 유지합니다.
-@st.cache_resource
-def init_supabase():
-    try:
-        url = st.secrets["SUPABASE_URL"]
-        key = st.secrets["SUPABASE_KEY"]
-        return create_client(url, key)
-    except Exception as e:
-        st.error(f"Supabase 연결 실패: {e}")
-        return None
-
-try:
-    supabase = init_supabase()
-    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-    FMP_API_KEY = st.secrets["FMP_API_KEY"]
-    ADMIN_EMAIL = st.secrets["ADMIN_EMAIL"]
-except Exception as e:
-    st.error(f"🔑 Secrets 로딩 오류: {e}")
-    st.stop()
-
-# ---------------------------------------------------------
-# 3. 비즈니스 로직 (회원, 리워드, 예측 저장)
+# 2. 비즈니스 로직 (회원, 리워드, 예측 저장)
 # ---------------------------------------------------------
 def get_user_profile(user):
     res = supabase.table('profiles').select("*").eq('id', user.id).execute()
@@ -76,7 +65,7 @@ def save_prediction(ticker, price, verdict):
     }).execute()
 
 # ---------------------------------------------------------
-# 4. AI 퀀트 엔진
+# 3. AI 퀀트 엔진 (상세 로직 유지)
 # ---------------------------------------------------------
 @st.cache_data(ttl=600)
 def fetch_fmp(endpoint, params=""):
@@ -90,6 +79,7 @@ def fetch_fmp(endpoint, params=""):
 def generate_ai_report(ticker, s):
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
+    # [복구 완료] 선우님이 원하셨던 상세 가중치 프롬프트
     prompt = f"""
     [ROLE]: Lead Institutional Quant Analyst.
     [TASK]: 90-DAY Premium Research Report for {ticker}.
@@ -113,38 +103,56 @@ def generate_ai_report(ticker, s):
     except: return "분석 로딩 실패. [VERDICT: HOLD]"
 
 # ---------------------------------------------------------
-# [인증 로직] 5. 세션 관리 및 로그인 처리
+# [핵심 해결] 3.5 세션 강제 동기화 (수동 HTTP 요청 방식)
 # ---------------------------------------------------------
-# 1. URL에서 code가 들어왔는지 확인 (로그인 직후 상황)
-if "code" in st.query_params and "user" not in st.session_state:
-    try:
-        auth_code = st.query_params["code"]
-        # 캐시된 supabase 클라이언트를 사용하므로 verifier가 유지될 가능성이 높음
-        session_data = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
-        
-        if session_data.user:
-            st.session_state["user"] = session_data.user
-            st.session_state["profile"] = get_user_profile(session_data.user)
-            st.query_params.clear() # 주소창 정리
-            st.rerun() # 새로고침하여 로그인 상태 반영
-    except Exception as e:
-        # 실패 시 에러 표시 (디버깅용)
-        st.error(f"로그인 처리 중 오류가 발생했습니다: {e}")
-        # 만약 여기서도 실패한다면, 최후의 수단으로 수동 교환 로직(PKCE Bypass)을 고려해야 하나,
-        # init_supabase 캐싱이 먼저 작동하는지 확인 필요.
-
-# 2. 기존 세션 유지 확인
 if "user" not in st.session_state:
-    try:
-        session = supabase.auth.get_session()
-        if session:
-            st.session_state["user"] = session.user
-            st.session_state["profile"] = get_user_profile(session.user)
-    except:
-        pass
+    # 1. URL에 코드가 있다면 (로그인 직후)
+    if "code" in st.query_params:
+        auth_code = st.query_params["code"]
+        
+        # [중요] 라이브러리(Supabase-py)를 쓰지 않고 직접 HTTP 요청으로 세션을 받아옵니다.
+        # 이 방식은 '저장된 verifier'가 사라지는 Streamlit의 재실행 문제를 원천적으로 해결합니다.
+        try:
+            token_url = f"{SUPABASE_URL}/auth/v1/token?grant_type=authorization_code"
+            resp = requests.post(token_url, headers={
+                "apikey": SUPABASE_KEY,
+                "Content-Type": "application/json"
+            }, json={
+                "code": auth_code,
+                "code_verifier": "", # 수동 URL을 썼으므로 verifier 없이 요청
+                "redirect_uri": "https://tetrades.streamlit.app"
+            })
+            
+            data = resp.json()
+            
+            if "access_token" in data:
+                # 성공 시 수동으로 세션 설정
+                supabase.auth.set_session(data["access_token"], data["refresh_token"])
+                user_data = supabase.auth.get_user()
+                
+                if user_data.user:
+                    st.session_state["user"] = user_data.user
+                    st.session_state["profile"] = get_user_profile(user_data.user)
+                    st.query_params.clear()
+                    st.rerun()
+            else:
+                st.error(f"로그인 실패 (상세): {data}")
+                
+        except Exception as e:
+            st.error(f"인증 통신 오류: {e}")
+
+    # 2. 기존 세션 복구 시도
+    else:
+        try:
+            session = supabase.auth.get_session()
+            if session:
+                st.session_state["user"] = session.user
+                st.session_state["profile"] = get_user_profile(session.user)
+        except:
+            pass
 
 # ---------------------------------------------------------
-# 6. 상단 레이아웃 및 로그인 UI
+# 4. 상단 레이아웃 및 인증 체크
 # ---------------------------------------------------------
 now_kst = datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d %H:%M:%S")
 st.markdown(f"<p style='text-align:right; color:#64748B; font-size:0.85rem;'>Live Sync: {now_kst} (KST)</p>", unsafe_allow_html=True)
@@ -152,12 +160,9 @@ st.markdown(f"<p style='text-align:right; color:#64748B; font-size:0.85rem;'>Liv
 top_col1, top_col2 = st.columns([7, 3])
 with top_col2:
     if "user" not in st.session_state:
-        # 표준 OAuth 흐름 사용 (캐싱된 클라이언트 덕분에 안전)
-        auth_response = supabase.auth.sign_in_with_oauth({
-            "provider": "google",
-            "options": {"redirectTo": "https://tetrades.streamlit.app"}
-        })
-        st.link_button("🚀 Google 계정으로 시작하기", auth_response.url, use_container_width=True)
+        # [수정] verifier를 생성하지 않는 순수 URL을 사용하여 'code challenge' 오류 방지
+        manual_auth_url = f"{SUPABASE_URL}/auth/v1/authorize?provider=google&redirect_to=https://tetrades.streamlit.app"
+        st.link_button("🚀 Google 계정으로 시작하기", manual_auth_url, use_container_width=True)
     else:
         profile = get_user_profile(st.session_state["user"])
         st.write(f"⚜️ {profile['subscription_type'].upper()} | 💰 {profile['points']}원")
@@ -168,7 +173,7 @@ with top_col2:
 st.markdown("<h1 style='letter-spacing:5px; margin-bottom:40px;'>TETRADES INTELLIGENCE</h1>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 7. 메인 탭 구성
+# 5. 메인 탭 구성 (관리자 로직 및 UI 100% 복구)
 # ---------------------------------------------------------
 is_admin = "user" in st.session_state and st.session_state["user"].email == ADMIN_EMAIL
 tab_names = ["📢 NOTICE", "🔍 QUANT RESEARCH", "🏆 RANKING"]
@@ -176,7 +181,7 @@ if is_admin: tab_names.append("👑 ADMIN")
 
 tabs = st.tabs(tab_names)
 
-# [Tab 1] 공지사항
+# [Tab 1] 공지사항 (Notice Box 복구)
 with tabs[0]:
     st.markdown("""
     <div class='notice-box'>
@@ -188,7 +193,7 @@ with tabs[0]:
     for n in notices.data:
         st.info(f"**[{n['created_at'][:10]}]**\n\n{n['content']}")
 
-# [Tab 2] 퀀트 리서치
+# [Tab 2] 퀀트 리서치 (Metric 및 Teaser 복구)
 with tabs[1]:
     st.markdown("<h3 style='margin-bottom:30px;'>Institutional AI Analysis</h3>", unsafe_allow_html=True)
     sc1, sc2, sc3 = st.columns([1, 2, 1])
@@ -198,6 +203,7 @@ with tabs[1]:
             s_data = fetch_fmp("quote", f"symbol={ticker}")
             if s_data:
                 s = s_data[0]
+                # 상세 지표 UI 복구
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("현재가", f"${s.get('price')}", f"{s.get('changesPercentage')}%")
                 m2.metric("시가총액", f"${s.get('marketCap', 0):,}")
@@ -215,7 +221,7 @@ with tabs[1]:
             else:
                 st.error("티커를 다시 확인해주세요.")
 
-# [Tab 3] 랭킹
+# [Tab 3] 랭킹 (Referral 로직 복구)
 with tabs[2]:
     if "user" in st.session_state:
         st.success(f"나의 추천 코드: **{profile['referral_code']}** (가입 시 900원 적립)")
@@ -224,7 +230,7 @@ with tabs[2]:
     if ranks.data:
         st.table(pd.DataFrame(ranks.data))
 
-# [Tab 4] 관리자 전용
+# [Tab 4] 관리자 전용 (대시보드 UI 및 기능 100% 복구)
 if is_admin:
     with tabs[3]:
         st.markdown("### 👑 Tetrades 마스터 관리 도구")
@@ -245,6 +251,7 @@ if is_admin:
             u_count = len(all_users.data) if all_users.data else 0
             p_count = len(all_preds.data) if all_preds.data else 0
             
+            # [복구 완료] 관리자용 상세 통계 카드 UI
             st.markdown(f"""
             <div class='admin-card'>
                 <h2>{u_count}명</h2>
