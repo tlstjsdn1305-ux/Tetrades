@@ -6,103 +6,125 @@ import pandas as pd
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 
-# 1. 환경 설정 및 보안 키 로드
-OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-FMP_API_KEY = st.secrets["FMP_API_KEY"]
+# 1. 보안 설정 및 API 키 로드
+try:
+    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    FMP_API_KEY = st.secrets["FMP_API_KEY"]
+except:
+    st.error("🔑 Streamlit Secrets에 API 키가 설정되지 않았습니다.")
+    st.stop()
+
 ssl_context = ssl._create_unverified_context()
 
 st.set_page_config(page_title="Tetrades Intelligence", page_icon="🌤️", layout="wide")
 
-# 2. 데이터 처리 함수 정의
+# 2. 데이터 처리 함수 (안전성 강화)
 def get_api_data(url):
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, context=ssl_context) as response:
             return json.loads(response.read().decode('utf-8'))
-    except: return None
+    except Exception:
+        return None
 
 def get_weather(change):
+    if change is None: return "⚪ 알 수 없음", "#BEBEBE"
     if change > 1.5: return "☀️ 쾌청 (Strong Bull)", "#FF4B4B"
     elif change > 0.3: return "🌤️ 맑음 (Bullish)", "#FF8C8C"
     elif change > -0.3: return "☁️ 흐림 (Neutral)", "#BEBEBE"
     elif change > -1.5: return "🌧️ 비 (Bearish)", "#4B89FF"
     else: return "⛈️ 폭풍우 (Strong Bear)", "#0042ED"
 
-# 3. 메인 UI - 상단 검색창 (Google 스타일)
-st.markdown("<h1 style='text-align: center; color: #1E1E1E;'>🏛️ Tetrades Intelligence</h1>", unsafe_allow_html=True)
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    ticker = st.text_input("", placeholder="분석할 주식 티커를 입력하세요 (예: NVDA, AAPL)", label_visibility="collapsed").upper()
-    search_clicked = st.button("AI 심층 분석 및 기상도 확인", use_container_width=True, type="primary")
+# 3. GPT 분석 함수
+def ask_gpt_analysis(ticker, stock_info):
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
+    prompt = f"Write a professional investment report for {ticker}. Data: {json.dumps(stock_info)}. Use Markdown."
+    payload = {
+        "model": "gpt-4o",
+        "messages": [{"role": "system", "content": "You are a Wall Street analyst."}, {"role": "user", "content": prompt}]
+    }
+    try:
+        req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
+        with urllib.request.urlopen(req, context=ssl_context) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            return result['choices'][0]['message']['content']
+    except: return "AI 리포트 생성 중 오류가 발생했습니다."
+
+# 4. 메인 화면 구성
+st.markdown("<h1 style='text-align: center;'>🏛️ Tetrades Intelligence</h1>", unsafe_allow_html=True)
+
+# 중앙 검색창
+c1, c2, c3 = st.columns([1, 2, 1])
+with c2:
+    ticker_input = st.text_input("", placeholder="분석할 주식 티커(예: AAPL, TSLA)", label_visibility="collapsed").upper()
+    search_btn = st.button("AI 심층 분석 및 기상도 확인", use_container_width=True, type="primary")
 
 st.divider()
 
-# 4. 시장 지수 및 전 세계 투자 기상도
+# 지수 대시보드
 major_indices = ["^GSPC", "^IXIC", "^KS11", "^N225", "GC=F", "CL=F"]
-index_names = {"^GSPC": "S&P 500", "^IXIC": "Nasdaq", "^KS11": "코스피", "^N225": "니케이 225", "GC=F": "금(Gold)", "CL=F": "원유(WTI)"}
-
-quotes = get_api_data(f"https://financialmodelingprep.com/stable/quote?symbol={','.join(major_indices)}&apikey={FMP_API_KEY}")
+index_names = {"^GSPC": "S&P 500", "^IXIC": "Nasdaq", "^KS11": "KOSPI", "^N225": "Nikkei", "GC=F": "Gold", "CL=F": "Oil"}
+quotes = get_api_data(f"https://financialmodelingprep.com/api/v3/quote/{','.join(major_indices)}?apikey={FMP_API_KEY}")
 
 if quotes:
-    avg_change = sum([q.get('changesPercentage', 0) for q in quotes]) / len(quotes)
+    valid_changes = [q.get('changesPercentage', 0) for q in quotes if q.get('changesPercentage') is not None]
+    avg_change = sum(valid_changes) / len(valid_changes) if valid_changes else 0
     w_label, w_color = get_weather(avg_change)
     st.markdown(f"<h3 style='text-align: center;'>오늘의 글로벌 투자 날씨: <span style='color:{w_color};'>{w_label}</span></h3>", unsafe_allow_html=True)
-    
     idx_cols = st.columns(len(quotes))
     for i, q in enumerate(quotes):
-        name = index_names.get(q['symbol'], q['symbol'])
-        idx_cols[i].metric(name, f"{q.get('price', 0):,.2f}", f"{q.get('changesPercentage', 0):.2f}%")
+        idx_cols[i].metric(index_names.get(q['symbol'], q['symbol']), f"{q.get('price', 0):,.2f}", f"{q.get('changesPercentage', 0):.2f}%")
 
 st.divider()
 
-# 5. 중간 레이아웃 - 좌측(뉴스) | 우측(히트맵)
-m_col1, m_col2 = st.columns([1, 1])
-
-with m_col1:
+# 뉴스 및 히트맵
+m1, m2 = st.columns([1.2, 1])
+with m1:
     st.subheader("📰 실시간 세계 경제 뉴스")
-    news_data = get_api_data(f"https://financialmodelingprep.com/api/v3/stock_news?limit=5&apikey={FMP_API_KEY}")
-    if news_data:
-        for n in news_data:
-            with st.expander(f"📌 {n['title'][:65]}..."):
-                st.write(f"**출처:** {n['site']} | {n['publishedDate']}")
-                st.write(n['text'])
-                st.link_button("기사 원문 보기", n['url'])
+    news = get_api_data(f"https://financialmodelingprep.com/api/v3/stock_news?limit=10&apikey={FMP_API_KEY}")
+    if news:
+        for n in news[:6]:
+            with st.expander(f"📌 {n['title'][:60]}..."):
+                st.write(f"**{n['site']}** | {n['publishedDate']}\n\n{n['text']}")
+                st.link_button("원문 읽기", n['url'])
+    else: st.info("뉴스를 불러오는 중입니다...")
 
-with m_col2:
-    st.subheader("🔥 글로벌 시장 히트맵 (S&P 500)")
-    heatmap_html = """
-    <div style="height:500px;"><script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-stock-heatmap.js" async>
-    {"dataSource": "S&P500","grouping": "sector","blockSize": "market_cap","blockColor": "change","locale": "ko","colorTheme": "light","width": "100%","height": "100%"}
-    </script></div>
-    """
+with m2:
+    st.subheader("🔥 글로벌 시장 히트맵")
+    heatmap_html = '<div style="height:500px;"><script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-stock-heatmap.js" async>{"dataSource": "S&P500","grouping": "sector","blockSize": "market_cap","blockColor": "change","locale": "ko","colorTheme": "light","width": "100%","height": "100%"}</script></div>'
     components.html(heatmap_html, height=520)
 
-# 6. 종목 분석 로직 (검색 시 실행)
-if search_clicked and ticker:
+# 5. 종목 분석 (검색 시 실행)
+if search_btn and ticker_input:
     st.divider()
-    with st.spinner(f"AI가 {ticker}의 데이터를 분석 중입니다..."):
-        # 데이터 수집
-        s_data = get_api_data(f"https://financialmodelingprep.com/stable/quote?symbol={ticker}&apikey={FMP_API_KEY}")
-        h_data = get_api_data(f"https://financialmodelingprep.com/stable/historical-price-eod/full?symbol={ticker}&apikey={FMP_API_KEY}")
+    with st.spinner(f"{ticker_input} 분석 중..."):
+        s_data = get_api_data(f"https://financialmodelingprep.com/api/v3/quote/{ticker_input}?apikey={FMP_API_KEY}")
+        # [해결 포인트] h_data를 불러올 때 에러 방지 로직 강화
+        h_raw = get_api_data(f"https://financialmodelingprep.com/api/v3/historical-price-eod/{ticker_input}?limit=120&apikey={FMP_API_KEY}")
         
         if s_data:
             s = s_data[0]
             st_w, st_c = get_weather(s.get('changesPercentage', 0))
+            st.markdown(f"## {s.get('name', ticker_input)} 투자 기상도: <span style='color:{st_c};'>{st_w}</span>", unsafe_allow_html=True)
             
-            # 종목별 기상도 및 대시보드
-            st.markdown(f"## {s.get('name', ticker)} ({ticker}) 투자 기상도: <span style='color:{st_c};'>{st_w}</span>", unsafe_allow_html=True)
-            
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("현재가", f"${s.get('price', 0):,.2f}", f"{s.get('changesPercentage', 0):.2f}%")
-            c2.metric("시가총액", f"${s.get('marketCap', 0):,}")
-            c3.metric("52주 최고가", f"${s.get('yearHigh', 0):,.2f}")
-            c4.metric("PER", s.get('pe', 'N/A'))
+            # 지표 대시보드
+            sc1, sc2, sc3, sc4 = st.columns(4)
+            sc1.metric("현재가", f"${s.get('price', 0):,.2f}", f"{s.get('changesPercentage', 0):.2f}%")
+            sc2.metric("시가총액", f"${s.get('marketCap', 0):,}")
+            sc3.metric("52주 최고", f"${s.get('yearHigh', 0):,.2f}")
+            sc4.metric("PER", s.get('pe', 'N/A'))
 
-            if h_data:
-                df = pd.DataFrame(h_data.get('historical', [])).tail(120)
+            # [해결 포인트] AttributeError 방지: h_raw가 dict이고 'historical' 키가 있는지 확인
+            if h_raw and isinstance(h_raw, dict) and 'historical' in h_raw:
+                df = pd.DataFrame(h_raw['historical'])
+                df['date'] = pd.to_datetime(df['date'])
                 st.line_chart(df.set_index('date')['close'])
+            else:
+                st.warning("⚠️ 차트 데이터를 불러올 수 없습니다.")
 
-            # GPT 가중치 분석 (토큰 사용)
-            prompt = f"Analyze {ticker} based on price: {s.get('price')}, change: {s.get('changesPercentage')}%."
-            # (기존의 상세 GPT prompt 로직을 여기에 그대로 포함하시면 됩니다)
-            st.success("✅ AI 가중치 분석 리포트 생성이 완료되었습니다.")
+            st.subheader("📑 AI Deep Analyst Report")
+            report = ask_gpt_analysis(ticker_input, s)
+            st.markdown(report)
+        else:
+            st.error("티커 정보를 찾을 수 없습니다.")
