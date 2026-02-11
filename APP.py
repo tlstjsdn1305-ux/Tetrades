@@ -37,6 +37,8 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] { color: #64748B; padding-bottom: 10px; font-size: 1.1rem; }
     .stTabs [aria-selected="true"] { color: #C8AA6E !important; border-bottom: 2px solid #C8AA6E !important; }
     .admin-card { background-color: #1E293B; padding: 20px; border-radius: 8px; border: 1px solid #475569; text-align: center; }
+    .admin-card h2 { margin: 0; color: #E2E8F0 !important; }
+    .admin-card p { margin: 5px 0 0 0; color: #94A3B8; font-size: 0.9rem; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -62,7 +64,7 @@ def save_prediction(ticker, price, verdict):
     }).execute()
 
 # ---------------------------------------------------------
-# 3. AI 퀀트 엔진 (상세 로직 복구)
+# 3. AI 퀀트 엔진 (상세 로직 유지)
 # ---------------------------------------------------------
 @st.cache_data(ttl=600)
 def fetch_fmp(endpoint, params=""):
@@ -76,7 +78,6 @@ def fetch_fmp(endpoint, params=""):
 def generate_ai_report(ticker, s):
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
-    # 선우님이 원하셨던 상세 가중치 프롬프트 복구
     prompt = f"""
     [ROLE]: Lead Institutional Quant Analyst.
     [TASK]: 90-DAY Premium Research Report for {ticker}.
@@ -100,7 +101,7 @@ def generate_ai_report(ticker, s):
     except: return "분석 로딩 실패. [VERDICT: HOLD]"
 
 # ---------------------------------------------------------
-# [수정된 핵심 로직] 3.5 세션 강제 동기화 (PKCE 우회)
+# [수정된 핵심 로직] 3.5 세션 강제 동기화 (PKCE 우회 및 에러 진단)
 # ---------------------------------------------------------
 if "user" not in st.session_state:
     if "code" in st.query_params:
@@ -114,8 +115,9 @@ if "user" not in st.session_state:
                 st.session_state["profile"] = get_user_profile(session_data.user)
                 st.query_params.clear()
                 st.rerun()
-        except Exception:
-            pass # 오류 발생 시 조용히 넘어감 (사용자 경험 보호)
+        except Exception as e:
+            # 진단 모드: 실패 시 에러를 숨기지 않고 표시 (디버깅용)
+            st.error(f"⚠️ 로그인 처리 중 오류 발생: {e}")
     else:
         try:
             session = supabase.auth.get_session()
