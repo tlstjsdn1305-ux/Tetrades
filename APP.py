@@ -90,6 +90,23 @@ def generate_ai_report(ticker, s):
         with urllib.request.urlopen(req, context=ssl_context) as response:
             return json.loads(response.read().decode('utf-8'))['choices'][0]['message']['content']
     except: return "분석 로딩 실패. [VERDICT: HOLD]"
+        # ---------------------------------------------------------
+# [추가] 3.5 세션 강제 동기화 (구글 로그인 후 복귀 시 필요)
+# ---------------------------------------------------------
+if "user" not in st.session_state:
+    try:
+        # 현재 브라우저에 저장된 로그인 정보를 가져옵니다.
+        session = supabase.auth.get_session()
+        if session:
+            st.session_state["user"] = session.user
+            st.session_state["profile"] = get_user_profile(session.user)
+    except:
+        pass
+
+# ---------------------------------------------------------
+# 4. 상단 레이아웃 및 인증 체크
+# ---------------------------------------------------------
+# (이하 기존 코드...)
 
 # ---------------------------------------------------------
 # 4. 상단 레이아웃 및 인증 체크 (🚀 링크 버튼 적용)
@@ -194,3 +211,4 @@ if is_admin:
         if all_users.data:
             df_users = pd.DataFrame(all_users.data)
             st.dataframe(df_users[['email', 'subscription_type', 'points', 'referral_code', 'id']])
+
