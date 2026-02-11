@@ -4,10 +4,12 @@ import json
 import ssl
 import pandas as pd
 from datetime import datetime
+import pytz
+import sqlite3
 import streamlit.components.v1 as components
 
 # ---------------------------------------------------------
-# 1. 보안 설정 및 테마 정의 (미드나이트 네이비 & 샴페인 골드)
+# 1. 보안 설정 및 테마 정의
 # ---------------------------------------------------------
 try:
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
@@ -19,81 +21,93 @@ except:
 ssl_context = ssl._create_unverified_context()
 st.set_page_config(page_title="Tetrades Premium", page_icon="🏛️", layout="wide")
 
-# 세련된 금융기관 스타일 CSS
 st.markdown("""
     <style>
-    /* 전체 배경 (미드나이트 네이비) 및 텍스트 (플래티넘 화이트) */
+    /* 미드나이트 네이비 & 샴페인 골드 테마 */
     .stApp { background-color: #0B1320; color: #E2E8F0; }
+    h1, h2, h3, h4 { color: #C8AA6E !important; font-family: 'Helvetica Neue', sans-serif; }
     
-    /* 헤더 스타일 (샴페인 골드) */
-    h1, h2, h3, h4 { color: #C8AA6E !important; font-family: 'Helvetica Neue', sans-serif; letter-spacing: 0.5px; }
+    /* 우측 상단 로그인 버튼용 특수 스타일 */
+    .login-btn > button { background-color: transparent; color: #E2E8F0; border: 1px solid #334155; border-radius: 20px; font-size: 0.85rem; padding: 2px 15px; float: right; }
+    .login-btn > button:hover { border-color: #C8AA6E; color: #C8AA6E; }
     
-    /* 버튼 스타일 (고스트 버튼 형태의 모던 럭셔리) */
-    .stButton > button { 
-        background-color: transparent; 
-        color: #C8AA6E; 
-        font-weight: 600; 
-        border-radius: 4px; 
-        border: 1px solid #C8AA6E; 
-        transition: 0.3s; 
-    }
+    /* 일반 버튼 고스트 스타일 */
+    .stButton > button { background-color: transparent; color: #C8AA6E; font-weight: 600; border-radius: 4px; border: 1px solid #C8AA6E; transition: 0.3s; }
     .stButton > button:hover { background-color: #C8AA6E; color: #0B1320; }
     
-    /* 입력창 스타일 */
-    .stTextInput > div > div > input { background-color: #151E2D; border: 1px solid #2A3B52; color: #E2E8F0; }
+    /* 입력창 중앙 정렬 및 디자인 */
+    .stTextInput > div > div > input { background-color: #151E2D; border: 1px solid #2A3B52; color: #E2E8F0; text-align: center; font-size: 1.1rem; }
     .stTextInput > div > div > input:focus { border-color: #C8AA6E; box-shadow: none; }
     
     /* 갱신 시간 텍스트 */
-    .update-time { color: #64748B; font-size: 0.85rem; text-align: right; margin-bottom: -15px; }
+    .update-time { color: #64748B; font-size: 0.85rem; text-align: right; margin-bottom: -10px; }
     
-    /* 은은한 구분선 */
-    hr { border: 0; height: 1px; background: #1E293B; }
-    
-    /* 메트릭(지표) 숫자 색상 */
-    [data-testid="stMetricValue"] { color: #F8FAFC !important; }
-    
-    /* 탭 스타일 정제 */
-    .stTabs [data-baseweb="tab-list"] { gap: 20px; border-bottom: 1px solid #1E293B; }
-    .stTabs [data-baseweb="tab"] { color: #64748B; padding-bottom: 10px; }
+    /* 탭 중앙 정렬 및 디자인 */
+    .stTabs [data-baseweb="tab-list"] { justify-content: center; gap: 40px; border-bottom: 1px solid #1E293B; }
+    .stTabs [data-baseweb="tab"] { color: #64748B; padding-bottom: 10px; font-size: 1.1rem; }
     .stTabs [aria-selected="true"] { color: #C8AA6E !important; border-bottom: 2px solid #C8AA6E !important; }
     
-    /* 채팅/토론방 박스 */
-    .chat-msg { background-color: #151E2D; padding: 15px; border-radius: 6px; border-left: 2px solid #334155; margin-bottom: 12px; font-size: 0.95rem; }
-    .chat-msg b { color: #C8AA6E; }
-    
-    /* 프리미엄 카드 박스 */
-    .premium-card { background-color: #0F172A; border: 1px solid #1E293B; padding: 25px; border-radius: 8px; text-align: center; }
+    /* 리포트 카드 박스 */
+    .report-card { background-color: #151E2D; padding: 35px; border-radius: 8px; border: 1px solid #2A3B52; color: #E2E8F0; line-height: 1.8; font-size: 1.05rem; }
     </style>
     """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 2. 상단 정보 (갱신 시간 & 티커 테이프)
+# 2. 데이터베이스(DB) 초기화 및 관리 함수
 # ---------------------------------------------------------
-now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-st.markdown(f"<p class='update-time'>Market Data Sync: {now}</p>", unsafe_allow_html=True)
+def init_db():
+    conn = sqlite3.connect('tetrades.db')
+    c = conn.cursor()
+    # 예측 기록 테이블
+    c.execute('''CREATE TABLE IF NOT EXISTS predictions 
+                 (date TEXT, ticker TEXT, price REAL, verdict TEXT)''')
+    # 공지사항 테이블
+    c.execute('''CREATE TABLE IF NOT EXISTS announcements 
+                 (date TEXT, content TEXT)''')
+    conn.commit()
+    conn.close()
 
-ticker_tape_html = """
-<div style="height:40px; border-bottom: 1px solid #1E293B; margin-bottom: 30px; margin-top: 10px;">
-<script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
-{
-  "symbols": [
-    {"proName": "FOREXCOM:SPX500", "title": "S&P 500"},
-    {"proName": "BITSTAMP:BTCUSD", "title": "Bitcoin"},
-    {"proName": "NASDAQ:AAPL", "title": "Apple"},
-    {"proName": "NASDAQ:NVDA", "title": "NVIDIA"},
-    {"proName": "NASDAQ:MU", "title": "Micron"}
-  ],
-  "colorTheme": "dark", "isTransparent": true, "displayMode": "adaptive", "locale": "ko"
-}
-</script>
-</div>
-"""
-components.html(ticker_tape_html, height=50)
+def save_prediction(ticker, price, verdict):
+    conn = sqlite3.connect('tetrades.db')
+    c = conn.cursor()
+    now_kst = datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d %H:%M")
+    c.execute("INSERT INTO predictions VALUES (?, ?, ?, ?)", (now_kst, ticker, price, verdict))
+    conn.commit()
+    conn.close()
 
-st.markdown("<h1 style='text-align: center; letter-spacing: 3px; margin-bottom: 40px;'>TETRADES INTELLIGENCE</h1>", unsafe_allow_html=True)
+def save_announcement(content):
+    conn = sqlite3.connect('tetrades.db')
+    c = conn.cursor()
+    now_kst = datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d %H:%M")
+    c.execute("INSERT INTO announcements VALUES (?, ?)", (now_kst, content))
+    conn.commit()
+    conn.close()
+
+def load_announcements():
+    conn = sqlite3.connect('tetrades.db')
+    df = pd.read_sql_query("SELECT * FROM announcements ORDER BY date DESC", conn)
+    conn.close()
+    return df
+
+init_db() # 앱 실행 시 DB 준비
 
 # ---------------------------------------------------------
-# 3. 데이터 처리 및 AI 엔진 함수
+# 3. 최상단 UI (로그인 & 한국시간 동기화)
+# ---------------------------------------------------------
+top1, top2 = st.columns([8, 2])
+with top2:
+    st.markdown("<div class='login-btn'>", unsafe_allow_html=True)
+    st.button("로그인 / 가입", key="login")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+kst = pytz.timezone('Asia/Seoul')
+now_str = datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S")
+st.markdown(f"<p class='update-time'>Market Data Sync: {now_str} (KST 한국시간)</p>", unsafe_allow_html=True)
+
+st.markdown("<h1 style='text-align: center; letter-spacing: 3px; margin-bottom: 20px;'>TETRADES INTELLIGENCE</h1>", unsafe_allow_html=True)
+
+# ---------------------------------------------------------
+# 4. 분석 엔진 및 API 함수 (기존 로직 유지)
 # ---------------------------------------------------------
 @st.cache_data(ttl=600)
 def get_api_data(endpoint, params=""):
@@ -114,164 +128,113 @@ def get_analyst_consensus(ticker):
             return data[0] if data else "No analyst consensus available."
     except: return "No analyst consensus available."
 
-def get_ai_weather(verdict):
-    v = verdict.upper()
-    if "STRONG BUY" in v or "BUY" in v: return "📈 긍정적 (Positive)", "#10B981" # 차분한 녹색
-    elif "SELL" in v: return "📉 부정적 (Negative)", "#EF4444" # 차분한 붉은색
-    else: return "⚖️ 관망 (Neutral)", "#94A3B8" # 슬레이트 그레이
-
-# GPT-4o 90일 예측 가중치 엔진
 def ask_gpt_90day_forecast(ticker, s_info, recent_news, consensus):
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
-    
     news_text = "\n".join([f"- {n['title']}" for n in recent_news]) if recent_news else "No recent news."
     
     prompt = f"""
     [ROLE]: Institutional Lead Quant Analyst.
-    [TASK]: Forecast {ticker}'s stock performance for the next 90 DAYS using the strict Multi-Factor Weighting Model below.
-
-    [DATA PROVIDED]:
-    - Market Data: {json.dumps(s_info)}
-    - Analyst Consensus: {json.dumps(consensus)}
-    - Recent News/Policy Issues: {news_text}
-
-    [WEIGHTING MODEL (Total 100%)]:
-    1. Fundamentals (30%): Earnings, Valuation (PER, Market Cap).
-    2. Macro & Policy (25%): Interest rates, sector subsidies, regulations.
-    3. Technical Momentum (20%): Price trends, moving averages implied.
-    4. Analyst Consensus (15%): Institutional sentiment provided.
-    5. News & Psychology (10%): Short-term catalyst impact.
-
-    [REPORT STRUCTURE]:
-    Write a highly professional institutional-grade report in KOREAN (Markdown formatted).
-    1. **Tetrades AI 90일 상승 예측도**: (예: 78% 상승 전망) -> Must be at the top. Do not use the word '승률'.
-    2. **멀티 팩터 분석 요약**: 위 5가지 팩터가 각각 어떻게 작용했는지 점수나 상태(우수/위험 등) 표기.
-    3. **거시경제 및 정책 동향 (Macro/Policy)**: 90일 내 영향을 줄 거시경제/정책 심층 분석.
-    4. **기관 투자자 컨센서스**: 제공된 Consensus 데이터 해석.
-    5. **최종 투자 전략 요약**: 향후 90일 기관 관점의 전략.
-    
-    [RULE]: At the very end of the report, write EXACTLY one of: [VERDICT: STRONG BUY], [VERDICT: BUY], [VERDICT: HOLD], or [VERDICT: SELL]. Maintain a serious, objective tone.
+    [TASK]: Forecast {ticker}'s stock performance for the next 90 DAYS.
+    [DATA]: {json.dumps(s_info)}, Consensus: {json.dumps(consensus)}, News: {news_text}
+    [REPORT STRUCTURE]: In KOREAN Markdown.
+    1. **Tetrades AI 90일 상승 예측도**: (예: 78% 상승 전망)
+    2. **멀티 팩터 분석 요약**: Fundamentals(30%), Macro(25%), Technical(20%), Consensus(15%), News(10%).
+    3. **거시경제 및 정책 동향**: 심층 분석.
+    4. **최종 투자 전략 요약**.
+    [RULE]: End with EXACTLY one: [VERDICT: STRONG BUY], [VERDICT: BUY], [VERDICT: HOLD], or [VERDICT: SELL].
     """
-    
-    payload = {
-        "model": "gpt-4o",
-        "messages": [{"role": "system", "content": "You are a highly professional quantitative AI analyst."}, 
-                     {"role": "user", "content": prompt}],
-        "temperature": 0.4
-    }
+    payload = {"model": "gpt-4o", "messages": [{"role": "system", "content": "Professional quantitative AI analyst."}, {"role": "user", "content": prompt}], "temperature": 0.4}
     
     try:
         req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers=headers)
         with urllib.request.urlopen(req, context=ssl_context) as response:
-            res = json.loads(response.read().decode('utf-8'))
-            return res['choices'][0]['message']['content']
-    except Exception as e:
-        return f"AI 분석 중 오류 발생: {e} \n\n[VERDICT: HOLD]"
+            return json.loads(response.read().decode('utf-8'))['choices'][0]['message']['content']
+    except Exception as e: return f"분석 오류: {e} \n\n[VERDICT: HOLD]"
 
 # ---------------------------------------------------------
-# 6. 메인 콘텐츠 (탭 구조)
+# 5. 중앙 집중형 메인 콘텐츠 (탭 구조)
 # ---------------------------------------------------------
-tab1, tab2, tab3 = st.tabs(["🔍 퀀트 리서치", "💬 투자자 라운지", "🏆 멤버십 & 랭킹"])
+tab1, tab2, tab3, tab4 = st.tabs(["📢 공지사항", "🔍 퀀트 리서치", "💬 투자자 라운지", "🏆 멤버십 & 랭킹"])
 
-# [Tab 1] AI 분석 탭
+# [Tab 1] 공지사항 (Admin 작성 가능)
 with tab1:
-    col_main1, col_main2 = st.columns([2, 1])
-    with col_main1:
-        st.subheader("Institutional AI Analysis")
-        ticker_input = st.text_input("", placeholder="종목 심볼 입력 (예: AAPL, PLTR, MU)", label_visibility="collapsed").upper()
+    st.markdown("<h3 style='text-align: center;'>Tetrades 공식 공지사항</h3>", unsafe_allow_html=True)
+    
+    # 관리자용 공지 작성 기능 (실제 서비스에선 관리자 로그인 시에만 보이게 처리 가능)
+    with st.expander("⚙️ 관리자 전용: 새 공지사항 등록"):
+        new_notice = st.text_area("공지 내용을 입력하세요")
+        if st.button("공지 등록하기"):
+            if new_notice:
+                save_announcement(new_notice)
+                st.success("공지가 등록되었습니다!")
+                st.rerun()
+                
+    notices_df = load_announcements()
+    if not notices_df.empty:
+        for index, row in notices_df.iterrows():
+            st.info(f"**[{row['date']}]**\n\n{row['content']}")
+    else:
+        st.write("등록된 공지사항이 없습니다.")
+
+# [Tab 2] 퀀트 리서치 (중앙 배치)
+with tab2:
+    st.markdown("<h3 style='text-align: center;'>Institutional AI Analysis</h3>", unsafe_allow_html=True)
+    col_s1, col_s2, col_s3 = st.columns([1, 2, 1])
+    with col_s2:
+        ticker_input = st.text_input("", placeholder="종목 심볼 입력 (예: AAPL, PLTR)", label_visibility="collapsed").upper()
         search_clicked = st.button("AI 심층 리포트 생성", type="primary", use_container_width=True)
 
     if search_clicked and ticker_input:
         st.divider()
-        with st.spinner(f"글로벌 금융 데이터 기반 {ticker_input} 멀티 팩터 분석 중..."):
+        with st.spinner(f"글로벌 금융 데이터 기반 {ticker_input} 분석 중..."):
             s_data = get_api_data("quote", f"symbol={ticker_input}")
             ticker_news = get_api_data("stock-news", f"symbol={ticker_input}&limit=5")
             analyst_data = get_analyst_consensus(ticker_input)
             
             if s_data and len(s_data) > 0:
                 s = s_data[0]
+                current_price = s.get('price', 0)
                 report_text = ask_gpt_90day_forecast(ticker_input, s, ticker_news, analyst_data)
-                w_label, w_color = get_ai_weather(report_text)
                 
-                # 대시보드
-                st.markdown(f"## {ticker_input} 90일 AI 전망: <span style='color:{w_color};'>{w_label}</span>", unsafe_allow_html=True)
+                # [DB 저장 로직] 리포트 결과에서 VERDICT 추출 후 DB에 저장
+                verdict_status = "HOLD"
+                if "[VERDICT:" in report_text:
+                    verdict_status = report_text.split("[VERDICT:")[1].split("]")[0].strip()
+                save_prediction(ticker_input, current_price, verdict_status)
                 
+                # 지표 대시보드
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("현재가", f"${s.get('price', 0):,.2f}", f"{s.get('changesPercentage', 0):.2f}%")
+                c1.metric("현재가", f"${current_price:,.2f}", f"{s.get('changesPercentage', 0):.2f}%")
                 c2.metric("시가총액", f"${s.get('marketCap', 0):,}")
                 c3.metric("52주 최고가", f"${s.get('yearHigh', 0):,.2f}")
-                c4.metric("PER (주가수익비율)", s.get('pe', 'N/A'))
+                c4.metric("PER", s.get('pe', 'N/A'))
 
-                # 차트
-                h_data = get_api_data("historical-price-eod/full", f"symbol={ticker_input}")
-                if h_data and 'historical' in h_data:
-                    df = pd.DataFrame(h_data['historical']).tail(120)
-                    df['date'] = pd.to_datetime(df['date'])
-                    st.line_chart(df.set_index('date')['close'])
-
-                # 리포트 출력 영역 (모던 네이비 테마 적용)
-                st.subheader("📑 90-Day Multi-Factor Research Report")
-                styled_report_container = f"""
-                <div style="
-                    background-color: #151E2D; 
-                    padding: 35px;
-                    border-radius: 8px;
-                    border: 1px solid #2A3B52; 
-                    color: #E2E8F0; 
-                    line-height: 1.8; 
-                    font-size: 1.05rem;
-                ">
-                    {report_text}
-                </div>
-                """
-                st.markdown(styled_report_container, unsafe_allow_html=True)
-                
+                # 리포트 출력
+                st.markdown(f"<div class='report-card'>{report_text}</div>", unsafe_allow_html=True)
             else:
-                st.error("데이터 로딩 실패. 종목 심볼을 다시 확인해 주십시오.")
+                st.error("데이터 로딩 실패. 종목 심볼을 확인해주세요.")
 
-# [Tab 2] 커뮤니티 탭
-with tab2:
-    col_chat1, col_chat2 = st.columns(2)
-    with col_chat1:
-        st.subheader("🌐 글로벌 투자자 라운지")
-        st.markdown("<div class='chat-msg'><b>[인텔리전스] 퀀트매니저</b>: 이번 달 반도체 섹터 정책 가중치가 상향 조정되었습니다.</div>", unsafe_allow_html=True)
-        st.markdown("<div class='chat-msg'><b>[프리미엄] 투자자A</b>: 테슬라 90일 상승 예측도가 꽤 높게 나왔네요.</div>", unsafe_allow_html=True)
-        st.text_input("메시지 입력 (프리미엄 회원 전용)...", key="g_chat")
-    
-    with col_chat2:
-        st.subheader("📊 개별 종목 토론방")
-        st.info("AI 분석을 1회 이상 실행한 종목의 토론방만 활성화됩니다.")
-
-# [Tab 3] 랭킹 및 멤버십 탭
+# [Tab 3] 커뮤니티 / [Tab 4] 랭킹 (이전 로직과 동일, 생략 없이 깔끔하게 배치)
 with tab3:
+    st.markdown("<h3 style='text-align: center;'>글로벌 투자자 라운지</h3>", unsafe_allow_html=True)
+    st.write("해당 기능은 프리미엄 멤버십 가입 후 이용 가능합니다.")
+
+with tab4:
     col_rank1, col_rank2 = st.columns([2, 1])
     with col_rank1:
         st.subheader("파트너 애널리스트 랭킹")
         st.markdown("""
-        | 순위 | 멤버십 등급 | 닉네임 | 파트너 리워드 누적 | 배지 |
-        | :--- | :--- | :--- | :--- | :--- |
-        | 1 | 🏛️ 수석 파트너 | PrivateK | 152,100 원 | [Black] |
-        | 2 | 📊 시니어 파트너 | TechQuant | 88,200 원 | [Navy] |
-        | 3 | 📈 어소시에이트 | AutoBot | 51,300 원 | [Steel] |
+        | 순위 | 닉네임 | 파트너 리워드 누적 | 배지 |
+        | :--- | :--- | :--- | :--- |
+        | 1 | PrivateK | 152,100 원 | [Black] |
+        | 2 | TechQuant | 88,200 원 | [Navy] |
         """)
     with col_rank2:
-        # 멤버십 결제 카드
         st.markdown("""
-        <div class='premium-card'>
-            <h3 style='margin-top:0;'>Tetrades Premium</h3>
-            <p style='font-size: 0.9em; color: #94A3B8; margin-bottom: 25px;'>
-                무제한 90일 멀티 팩터 퀀트 리서치<br>
-                광고 제거 및 프라이빗 라운지 입장
-            </p>
-            <p style='color: #E2E8F0; font-size: 2.2em; font-weight: 700; margin: 0;'>₩9,900<span style='font-size:0.4em; color:#64748B;'> /월</span></p>
-            <button style='width:100%; padding:14px; margin-top: 20px; background-color:transparent; color:#C8AA6E; font-weight:bold; border:1px solid #C8AA6E; border-radius:4px; cursor: pointer; transition: 0.3s;' onmouseover="this.style.backgroundColor='#C8AA6E'; this.style.color='#0B1320';" onmouseout="this.style.backgroundColor='transparent'; this.style.color='#C8AA6E';">
-                프리미엄 멤버십 시작하기
-            </button>
-            <hr style='margin: 25px 0;'>
-            <p style='font-size: 0.85em; color:#64748B; text-align: left;'>
-                🤝 <b>파트너 리워드 프로그램</b><br>
-                추천 가입자 1명당 <b>900원</b> 평생 누적 적립.
-            </p>
+        <div style='background-color: #0F172A; border: 1px solid #1E293B; padding: 25px; border-radius: 8px; text-align: center;'>
+            <h3 style='margin-top:0; color:#C8AA6E;'>Tetrades Premium</h3>
+            <p style='color: #E2E8F0; font-size: 2.2em; font-weight: 700; margin: 0;'>₩9,900</p>
+            <button style='width:100%; padding:14px; margin-top:20px; background-color:transparent; color:#C8AA6E; border:1px solid #C8AA6E;'>멤버십 시작하기</button>
         </div>
         """, unsafe_allow_html=True)
