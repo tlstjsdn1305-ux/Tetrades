@@ -56,12 +56,6 @@ def get_user_profile(user):
     supabase.table('profiles').insert(profile_data).execute()
     return profile_data
 
-def handle_google_login():
-    supabase.auth.sign_in_with_oauth({
-        "provider": "google",
-        "options": {"redirectTo": "https://tetrades.streamlit.app"}
-    })
-
 def save_prediction(ticker, price, verdict):
     target = (datetime.now() + timedelta(days=90)).date()
     supabase.table('predictions').insert({
@@ -98,16 +92,21 @@ def generate_ai_report(ticker, s):
     except: return "분석 로딩 실패. [VERDICT: HOLD]"
 
 # ---------------------------------------------------------
-# 4. 상단 레이아웃 및 인증 체크
+# 4. 상단 레이아웃 및 인증 체크 (🚀 링크 버튼 적용)
 # ---------------------------------------------------------
 now_kst = datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d %H:%M:%S")
 st.markdown(f"<p style='text-align:right; color:#64748B; font-size:0.85rem;'>Live Sync: {now_kst} (KST)</p>", unsafe_allow_html=True)
 
-top_col1, top_col2 = st.columns([8, 2])
+top_col1, top_col2 = st.columns([7, 3]) # 버튼을 위해 비율을 살짝 조정했습니다.
 with top_col2:
     if "user" not in st.session_state:
-        if st.button("Google 계정으로 시작하기"):
-            handle_google_login()
+        # Supabase로부터 구글 로그인 전용 URL을 받아옵니다.
+        auth_response = supabase.auth.sign_in_with_oauth({
+            "provider": "google",
+            "options": {"redirectTo": "https://tetrades.streamlit.app"}
+        })
+        # 일반 버튼 대신 st.link_button을 사용하여 즉시 구글 화면으로 넘깁니다.
+        st.link_button("🚀 Google 계정으로 시작하기", auth_response.url, use_container_width=True)
     else:
         profile = get_user_profile(st.session_state["user"])
         st.write(f"⚜️ {profile['subscription_type'].upper()} | 💰 {profile['points']}원")
@@ -168,7 +167,7 @@ with tabs[2]:
     if ranks.data:
         st.table(pd.DataFrame(ranks.data))
 
-# [Tab 4] 관리자 전용 패널 (가장 많이 늘어난 부분)
+# [Tab 4] 관리자 전용 패널
 if is_admin:
     with tabs[3]:
         st.markdown("### 👑 Tetrades 마스터 관리 도구")
