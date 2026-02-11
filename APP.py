@@ -15,7 +15,7 @@ try:
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
     FMP_API_KEY = st.secrets["FMP_API_KEY"]
-    ADMIN_EMAIL = st.secrets["ADMIN_EMAIL"] # 관리자 전용 열쇠
+    ADMIN_EMAIL = st.secrets["ADMIN_EMAIL"]
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 except Exception as e:
     st.error(f"🔑 Secrets 설정 오류: {e}")
@@ -24,7 +24,6 @@ except Exception as e:
 ssl_context = ssl._create_unverified_context()
 st.set_page_config(page_title="Tetrades Gold", page_icon="🏛️", layout="wide")
 
-# 프리미엄 핀테크 테마 적용
 st.markdown("""
     <style>
     .stApp { background-color: #0B1320; color: #E2E8F0; }
@@ -47,7 +46,6 @@ def get_user_profile(user):
     res = supabase.table('profiles').select("*").eq('id', user.id).execute()
     if res.data: return res.data[0]
     
-    # 신규 가입 시 프로필 및 고유 추천 코드 생성
     new_code = str(uuid.uuid4())[:8].upper()
     profile_data = {
         "id": user.id, "email": user.email, 
@@ -90,39 +88,50 @@ def generate_ai_report(ticker, s):
         with urllib.request.urlopen(req, context=ssl_context) as response:
             return json.loads(response.read().decode('utf-8'))['choices'][0]['message']['content']
     except: return "분석 로딩 실패. [VERDICT: HOLD]"
-        # ---------------------------------------------------------
-# [추가] 3.5 세션 강제 동기화 (구글 로그인 후 복귀 시 필요)
+
+# ---------------------------------------------------------
+# [수정된 핵심 로직] 3.5 세션 강제 동기화 (URL 파라미터 파싱)
 # ---------------------------------------------------------
 if "user" not in st.session_state:
-    try:
-        # 현재 브라우저에 저장된 로그인 정보를 가져옵니다.
-        session = supabase.auth.get_session()
-        if session:
-            st.session_state["user"] = session.user
-            st.session_state["profile"] = get_user_profile(session.user)
-    except:
-        pass
+    # 1. 구글 인증 후 돌아왔을 때 주소창에 'code'가 있는지 낚아챕니다.
+    if "code" in st.query_params:
+        try:
+            auth_code = st.query_params["code"]
+            # 2. 낚아챈 코드를 Supabase에 제출하고 진짜 세션을 받아옵니다.
+            session_data = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
+            
+            if session_data.user:
+                st.session_state["user"] = session_data.user
+                st.session_state["profile"] = get_user_profile(session_data.user)
+                
+                # 3. 주소창을 깔끔하게 정리하고 화면을 새로고침합니다.
+                st.query_params.clear()
+                st.rerun()
+        except Exception as e:
+            st.error(f"구글 인증 연동 오류: {e}")
+    else:
+        # 코드가 없다면 기존 세션 유지가 되어있는지 일반 확인
+        try:
+            session = supabase.auth.get_session()
+            if session:
+                st.session_state["user"] = session.user
+                st.session_state["profile"] = get_user_profile(session.user)
+        except:
+            pass
 
 # ---------------------------------------------------------
-# 4. 상단 레이아웃 및 인증 체크
-# ---------------------------------------------------------
-# (이하 기존 코드...)
-
-# ---------------------------------------------------------
-# 4. 상단 레이아웃 및 인증 체크 (🚀 링크 버튼 적용)
+# 4. 상단 레이아웃 및 인증 체크 
 # ---------------------------------------------------------
 now_kst = datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d %H:%M:%S")
 st.markdown(f"<p style='text-align:right; color:#64748B; font-size:0.85rem;'>Live Sync: {now_kst} (KST)</p>", unsafe_allow_html=True)
 
-top_col1, top_col2 = st.columns([7, 3]) # 버튼을 위해 비율을 살짝 조정했습니다.
+top_col1, top_col2 = st.columns([7, 3])
 with top_col2:
     if "user" not in st.session_state:
-        # Supabase로부터 구글 로그인 전용 URL을 받아옵니다.
         auth_response = supabase.auth.sign_in_with_oauth({
             "provider": "google",
             "options": {"redirectTo": "https://tetrades.streamlit.app"}
         })
-        # 일반 버튼 대신 st.link_button을 사용하여 즉시 구글 화면으로 넘깁니다.
         st.link_button("🚀 Google 계정으로 시작하기", auth_response.url, use_container_width=True)
     else:
         profile = get_user_profile(st.session_state["user"])
@@ -211,4 +220,3 @@ if is_admin:
         if all_users.data:
             df_users = pd.DataFrame(all_users.data)
             st.dataframe(df_users[['email', 'subscription_type', 'points', 'referral_code', 'id']])
-
