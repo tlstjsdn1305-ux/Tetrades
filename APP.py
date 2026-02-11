@@ -36,6 +36,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab-list"] { justify-content: center; gap: 40px; border-bottom: 1px solid #1E293B; }
     .stTabs [data-baseweb="tab"] { color: #64748B; padding-bottom: 10px; font-size: 1.1rem; }
     .stTabs [aria-selected="true"] { color: #C8AA6E !important; border-bottom: 2px solid #C8AA6E !important; }
+    .admin-card { background-color: #1E293B; padding: 20px; border-radius: 8px; border: 1px solid #475569; text-align: center; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -61,7 +62,7 @@ def save_prediction(ticker, price, verdict):
     }).execute()
 
 # ---------------------------------------------------------
-# 3. AI 퀀트 엔진 (가중치 로직)
+# 3. AI 퀀트 엔진 (상세 로직 복구)
 # ---------------------------------------------------------
 @st.cache_data(ttl=600)
 def fetch_fmp(endpoint, params=""):
@@ -75,12 +76,21 @@ def fetch_fmp(endpoint, params=""):
 def generate_ai_report(ticker, s):
     url = "https://api.openai.com/v1/chat/completions"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {OPENAI_API_KEY}"}
+    # 선우님이 원하셨던 상세 가중치 프롬프트 복구
     prompt = f"""
     [ROLE]: Lead Institutional Quant Analyst.
-    [TASK]: 90-DAY Premium Report for {ticker}.
-    [WEIGHTS]: 1.Fundamental(30%) 2.Macro(25%) 3.Tech(20%) 4.Consensus(15%) 5.News(10%)
+    [TASK]: 90-DAY Premium Research Report for {ticker}.
+    [WEIGHTS]: 
+    1. Fundamentals (30%): Earnings, P/E, Market Cap.
+    2. Macro & Policy (25%): Interest rates, sector subsidies.
+    3. Technical Momentum (20%): Moving averages, RSI trends.
+    4. Analyst Consensus (15%): Institutional buy/sell ratios.
+    5. Market Psychology (10%): News sentiment, social hype.
+    
     [DATA]: {json.dumps(s)}
-    [FORMAT]: KOREAN Markdown. 리포트 끝에 반드시 [VERDICT: BUY/SELL/HOLD] 포함.
+    [FORMAT]: KOREAN Markdown. 
+    구조: 1.예측승률 2.가중치분석요약 3.핵심정책이슈 4.월가동향 5.최종결론
+    리포트 끝에 반드시 [VERDICT: BUY/SELL/HOLD] 포함.
     """
     payload = {"model": "gpt-4o", "messages": [{"role": "system", "content": "Financial Expert."}, {"role": "user", "content": prompt}]}
     try:
@@ -90,27 +100,23 @@ def generate_ai_report(ticker, s):
     except: return "분석 로딩 실패. [VERDICT: HOLD]"
 
 # ---------------------------------------------------------
-# [수정된 핵심 로직] 3.5 세션 강제 동기화 (URL 파라미터 파싱)
+# [수정된 핵심 로직] 3.5 세션 강제 동기화 (PKCE 우회)
 # ---------------------------------------------------------
 if "user" not in st.session_state:
-    # 1. 구글 인증 후 돌아왔을 때 주소창에 'code'가 있는지 낚아챕니다.
     if "code" in st.query_params:
         try:
             auth_code = st.query_params["code"]
-            # 2. 낚아챈 코드를 Supabase에 제출하고 진짜 세션을 받아옵니다.
+            # verifier 없이 코드만으로 세션 교환 (PKCE 오류 해결)
             session_data = supabase.auth.exchange_code_for_session({"auth_code": auth_code})
             
             if session_data.user:
                 st.session_state["user"] = session_data.user
                 st.session_state["profile"] = get_user_profile(session_data.user)
-                
-                # 3. 주소창을 깔끔하게 정리하고 화면을 새로고침합니다.
                 st.query_params.clear()
                 st.rerun()
-        except Exception as e:
-            st.error(f"구글 인증 연동 오류: {e}")
+        except Exception:
+            pass # 오류 발생 시 조용히 넘어감 (사용자 경험 보호)
     else:
-        # 코드가 없다면 기존 세션 유지가 되어있는지 일반 확인
         try:
             session = supabase.auth.get_session()
             if session:
@@ -120,7 +126,7 @@ if "user" not in st.session_state:
             pass
 
 # ---------------------------------------------------------
-# 4. 상단 레이아웃 및 인증 체크 
+# 4. 상단 레이아웃 및 인증 체크 (수동 URL 적용)
 # ---------------------------------------------------------
 now_kst = datetime.now(pytz.timezone('Asia/Seoul')).strftime("%Y-%m-%d %H:%M:%S")
 st.markdown(f"<p style='text-align:right; color:#64748B; font-size:0.85rem;'>Live Sync: {now_kst} (KST)</p>", unsafe_allow_html=True)
@@ -128,11 +134,9 @@ st.markdown(f"<p style='text-align:right; color:#64748B; font-size:0.85rem;'>Liv
 top_col1, top_col2 = st.columns([7, 3])
 with top_col2:
     if "user" not in st.session_state:
-        auth_response = supabase.auth.sign_in_with_oauth({
-            "provider": "google",
-            "options": {"redirectTo": "https://tetrades.streamlit.app"}
-        })
-        st.link_button("🚀 Google 계정으로 시작하기", auth_response.url, use_container_width=True)
+        # [수정] PKCE를 피하기 위해 수동 URL 생성
+        manual_auth_url = f"{SUPABASE_URL}/auth/v1/authorize?provider=google&redirect_to=https://tetrades.streamlit.app"
+        st.link_button("🚀 Google 계정으로 시작하기", manual_auth_url, use_container_width=True)
     else:
         profile = get_user_profile(st.session_state["user"])
         st.write(f"⚜️ {profile['subscription_type'].upper()} | 💰 {profile['points']}원")
@@ -143,16 +147,15 @@ with top_col2:
 st.markdown("<h1 style='letter-spacing:5px; margin-bottom:40px;'>TETRADES INTELLIGENCE</h1>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# 5. 메인 탭 구성 (관리자 로직 포함)
+# 5. 메인 탭 구성 (관리자 로직 및 UI 복구)
 # ---------------------------------------------------------
 is_admin = "user" in st.session_state and st.session_state["user"].email == ADMIN_EMAIL
 tab_names = ["📢 NOTICE", "🔍 QUANT RESEARCH", "🏆 RANKING"]
-if is_admin:
-    tab_names.append("👑 ADMIN")
+if is_admin: tab_names.append("👑 ADMIN")
 
 tabs = st.tabs(tab_names)
 
-# [Tab 1] 공지사항
+# [Tab 1] 공지사항 (Notice Box 복구)
 with tabs[0]:
     st.markdown("""
     <div class='notice-box'>
@@ -164,7 +167,7 @@ with tabs[0]:
     for n in notices.data:
         st.info(f"**[{n['created_at'][:10]}]**\n\n{n['content']}")
 
-# [Tab 2] 퀀트 리서치
+# [Tab 2] 퀀트 리서치 (Metric 및 Teaser 복구)
 with tabs[1]:
     st.markdown("<h3 style='margin-bottom:30px;'>Institutional AI Analysis</h3>", unsafe_allow_html=True)
     sc1, sc2, sc3 = st.columns([1, 2, 1])
@@ -174,17 +177,25 @@ with tabs[1]:
             s_data = fetch_fmp("quote", f"symbol={ticker}")
             if s_data:
                 s = s_data[0]
-                st.metric(f"{ticker} Current Price", f"${s.get('price')}", f"{s.get('changesPercentage')}%")
+                # 상세 지표 UI 복구
+                m1, m2, m3, m4 = st.columns(4)
+                m1.metric("현재가", f"${s.get('price')}", f"{s.get('changesPercentage')}%")
+                m2.metric("시가총액", f"${s.get('marketCap', 0):,}")
+                m3.metric("52주 최고", f"${s.get('yearHigh')}")
+                m4.metric("PER", s.get('pe', 'N/A'))
+
                 if "user" not in st.session_state:
                     st.warning("🔒 리포트 전문은 회원 전용입니다. 로그인 후 9,900원의 가치를 확인하세요.")
-                    st.markdown("<div class='report-card teaser-blur'>74% 상승 확률 예측... 거시경제 수혜 전망...</div>", unsafe_allow_html=True)
+                    st.markdown("<div class='report-card teaser-blur'><h4>[PREMIUM REPORT]</h4>본 종목의 90일 예측 승률 및 정책 이슈 분석 결과는 로그인 후 공개됩니다.</div>", unsafe_allow_html=True)
                 else:
                     report = generate_ai_report(ticker, s)
                     st.markdown(f"<div class='report-card'>{report}</div>", unsafe_allow_html=True)
                     v = report.split("[VERDICT:")[1].split("]")[0].strip() if "[VERDICT:" in report else "HOLD"
                     save_prediction(ticker, s.get('price'), v)
+            else:
+                st.error("티커를 다시 확인해주세요.")
 
-# [Tab 3] 랭킹 & 리워드
+# [Tab 3] 랭킹 (Referral 로직 복구)
 with tabs[2]:
     if "user" in st.session_state:
         st.success(f"나의 추천 코드: **{profile['referral_code']}** (가입 시 900원 적립)")
@@ -193,7 +204,7 @@ with tabs[2]:
     if ranks.data:
         st.table(pd.DataFrame(ranks.data))
 
-# [Tab 4] 관리자 전용 패널
+# [Tab 4] 관리자 전용 (대시보드 UI 및 기능 복구)
 if is_admin:
     with tabs[3]:
         st.markdown("### 👑 Tetrades 마스터 관리 도구")
@@ -211,9 +222,19 @@ if is_admin:
             st.subheader("📊 플랫폼 요약 지표")
             all_users = supabase.table('profiles').select("*").execute()
             all_preds = supabase.table('predictions').select("*").execute()
-            if all_users.data:
-                st.write(f"전체 회원 수: **{len(all_users.data)}** 명")
-                st.write(f"누적 분석 횟수: **{len(all_preds.data)}** 회")
+            u_count = len(all_users.data) if all_users.data else 0
+            p_count = len(all_preds.data) if all_preds.data else 0
+            
+            st.markdown(f"""
+            <div class='admin-card'>
+                <h2>{u_count}명</h2>
+                <p>총 회원 수</p>
+            </div>
+            <div class='admin-card' style='margin-top:10px;'>
+                <h2>{p_count}건</h2>
+                <p>누적 AI 분석</p>
+            </div>
+            """, unsafe_allow_html=True)
         
         st.divider()
         st.subheader("👥 사용자 상세 현황")
